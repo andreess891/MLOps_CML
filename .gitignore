@@ -75,6 +75,7 @@ env/
 ENV/
 .venv/
 .env/
+uv.lock
 
 # mypy
 .mypy_cache/
