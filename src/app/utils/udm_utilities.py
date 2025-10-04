@@ -1,0 +1,1 @@
+# Definicion de funciones generales empleadas en el proyecto
