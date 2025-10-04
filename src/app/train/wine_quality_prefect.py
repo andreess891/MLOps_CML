@@ -2,6 +2,7 @@
 # coding: utf-8
 
 import os
+import sys
 import pickle
 import logging
 from pathlib import Path
@@ -15,8 +16,10 @@ import mlflow
 from prefect import task, flow, get_run_logger
 from prefect.artifacts import create_table_artifact, create_markdown_artifact
 
-from app.train.etl import GetData
-from app.train.feature_engineer import FeatureEngineer
+from etl import GetData
+from feature_engineer import FeatureEngineer
+
+project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 
 # Setup logging
 logging.basicConfig(level=logging.INFO)
@@ -31,6 +34,7 @@ def setup_mlflow():
         mlflow.set_tracking_uri(mlflow_uri)
         # Test connection
         mlflow.search_experiments()
+        print(f"MLflow tracking URI set to: {mlflow_uri}")
         logger.info(f"Connected to MLflow at: {mlflow_uri}")
     except Exception as e:
         logger.warning(f"Failed to connect to {mlflow_uri}: {e}")
@@ -320,30 +324,28 @@ def duration_prediction_flow(year: int, month: int) -> str:
 
 
 if __name__ == "__main__":
-    import argparse
+    #import argparse
 
-    parser = argparse.ArgumentParser(description='Train a model to predict taxi trip duration using Prefect.')
-    parser.add_argument('--year', type=int, default=2023, help='Year of the data to train on (default: 2023)')
-    parser.add_argument('--month', type=int, default=1, help='Month of the data to train on (default: 1)')
-    parser.add_argument('--mlflow-uri', type=str, help='MLflow tracking URI (overrides environment variable)')
-    args = parser.parse_args()
-
+    #parser = argparse.ArgumentParser(description='Entrenar modelo para predecir la calidad del vino') 
+    #parser.add_argument('--mlflow-uri', type=str, help='MLflow tracking URI (overrides environment variable)')
+    #args = parser.parse_args()
+    #print(f"argumentos: {args}")
     # Override MLflow URI if provided
-    if args.mlflow_uri:
-        os.environ["MLFLOW_TRACKING_URI"] = args.mlflow_uri
-        setup_mlflow()
+    
+    os.environ["MLFLOW_TRACKING_URI"] = "sqlite:///wine.db"
+    setup_mlflow()
 
-    try:
+    #try:
         # Run the flow
-        run_id = duration_prediction_flow(year=args.year, month=args.month)
-        print("\n✅ Pipeline completed successfully!")
-        print(f"📊 MLflow run_id: {run_id}")
-        print(f"🔗 View results at: {mlflow.get_tracking_uri()}")
+        #run_id = duration_prediction_flow(year=args.year, month=args.month)
+        #print("\n✅ Pipeline completed successfully!")
+        #print(f"📊 MLflow run_id: {run_id}")
+        #print(f"🔗 View results at: {mlflow.get_tracking_uri()}")
 
         # Save run ID for reference
-        with open("prefect_run_id.txt", "w") as f:
-            f.write(run_id)
+        #with open("prefect_run_id.txt", "w") as f:
+        #    f.write(run_id)
             
-    except Exception as e:
-        logger.error(f"Pipeline failed: {e}")
-        raise
+    #except Exception as e:
+    #    logger.error(f"Pipeline failed: {e}")
+    #    raise
