@@ -207,7 +207,7 @@ class TrainMlflowOptuna:
         
         # Set up MLflow callback for Optuna
         mlflow_callback = MLflowCallback(
-            tracking_uri=mlflow.get_tracking_uri(),
+            tracking_uri=self.setup.get_tracking_uri(),
             metric_name=self.optimization_metric
         )
         
@@ -238,32 +238,32 @@ class TrainMlflowOptuna:
     def _train_best_model(self, X_train, X_test, y_train, y_test):
         """Train the final model with best parameters and comprehensive MLflow logging."""
         
-        with mlflow.start_run(run_name=f"best_model_{self.model_class.__name__}") as run:
+        with self.setup.start_run(run_name=f"best_model_{self.model_class.__name__}") as run:
             # Log basic parameters
-            mlflow.log_param("test_size", self.test_size)
-            mlflow.log_param("model_type", self.model_class.__name__)
-            mlflow.log_param("n_numeric_features", len(self.numeric_features))
-            mlflow.log_param("n_categorical_features", len(self.categorical_features))
-            mlflow.log_param("target_column", self.target_column)
-            mlflow.log_param("n_trials", self.n_trials)
-            mlflow.log_param("optimization_metric", self.optimization_metric)
-            
+            self.setup.log_param("test_size", self.test_size)
+            self.setup.log_param("model_type", self.model_class.__name__)
+            self.setup.log_param("n_numeric_features", len(self.numeric_features))
+            self.setup.log_param("n_categorical_features", len(self.categorical_features))
+            self.setup.log_param("target_column", self.target_column)
+            self.setup.log_param("n_trials", self.n_trials)
+            self.setup.log_param("optimization_metric", self.optimization_metric)
+
             # Log best hyperparameters
             for param_name, param_value in self.best_params.items():
-                mlflow.log_param(f"best_{param_name}", param_value)
+                self.setup.log_param(f"best_{param_name}", param_value)
             
             # Log fixed parameters if any
             for param_name, param_value in self.model_params.items():
-                mlflow.log_param(f"fixed_{param_name}", param_value)
-            
+                self.setup.log_param(f"fixed_{param_name}", param_value)
+
             # Log feature names
-            mlflow.log_param("numeric_features", ", ".join(self.numeric_features))
-            mlflow.log_param("categorical_features", ", ".join(self.categorical_features))
-            
+            self.setup.log_param("numeric_features", ", ".join(self.numeric_features))
+            self.setup.log_param("categorical_features", ", ".join(self.categorical_features))
+
             # Log dataset information
-            mlflow.log_param("n_train_samples", len(X_train))
-            mlflow.log_param("n_test_samples", len(X_test))
-            
+            self.setup.log_param("n_train_samples", len(X_train))
+            self.setup.log_param("n_test_samples", len(X_test))
+
             # Create model with best parameters
             all_params = {**self.model_params, **self.best_params}
             self.best_model = self.model_class(**all_params)
@@ -282,24 +282,24 @@ class TrainMlflowOptuna:
             
             all_metrics = {**train_metrics, **test_metrics}
             for metric_name, metric_value in all_metrics.items():
-                mlflow.log_metric(metric_name, metric_value)
-            
+                self.setup.log_metric(metric_name, metric_value)
+
             # Log the optimization score from Optuna
-            mlflow.log_metric(f"optuna_best_{self.optimization_metric}", self.best_score)
-            
+            self.setup.log_metric(f"optuna_best_{self.optimization_metric}", self.best_score)
+
             # Log the model
-            mlflow.sklearn.log_model(
+            self.setup.sklearn.log_model(
                 self.best_pipeline,
                 "model",
                 input_example=X_train.iloc[:5],
-                signature=mlflow.models.infer_signature(X_train, y_train_pred)
+                signature=self.setup.models.infer_signature(X_train, y_train_pred)
             )
             
             # Get the run ID for reference
             run_id = run.info.run_id
             
             print(f"\nBest Model MLflow Run ID: {run_id}")
-            print(f"Tracking URI: {mlflow.get_tracking_uri()}")
+            print(f"Tracking URI: {self.setup.get_tracking_uri()}")
             print(f"Train Accuracy: {train_metrics['train_accuracy']:.4f}")
             print(f"Test Accuracy: {test_metrics['test_accuracy']:.4f}")
             
