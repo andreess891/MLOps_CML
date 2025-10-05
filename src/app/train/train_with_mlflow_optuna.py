@@ -1,4 +1,6 @@
 import warnings
+import logging
+from pathlib import Path
 
 import mlflow
 import mlflow.sklearn
@@ -15,6 +17,10 @@ from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import OneHotEncoder, StandardScaler
 
 warnings.filterwarnings('ignore')
+
+# Setup logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 
 class TrainMlflowOptuna:
@@ -211,10 +217,10 @@ class TrainMlflowOptuna:
             metric_name=self.optimization_metric
         )
         
-        # Run optimization
-        print(f"Starting Optuna optimization with {self.n_trials} trials...")
-        print(f"Optimizing for: {self.optimization_metric}")
-        print(f"Model type: {self.model_class.__name__}")
+         # Run optimization
+        logger.info(f"Starting Optuna optimization with {self.n_trials} trials...")
+        logger.info(f"Optimizing for: {self.optimization_metric}")
+        logger.info(f"Model type: {self.model_class.__name__}")
         
         study.optimize(
             objective, 
@@ -226,9 +232,9 @@ class TrainMlflowOptuna:
         self.best_params = study.best_params
         self.best_score = study.best_value
         
-        print(f"\nOptimization complete!")
-        print(f"Best {self.optimization_metric}: {self.best_score:.4f}")
-        print(f"Best parameters: {self.best_params}")
+        logger.info("Optimization complete!")
+        logger.info(f"Best {self.optimization_metric}: {self.best_score:.4f}")
+        logger.info(f"Best parameters: {self.best_params}")
         
         # Train final model with best parameters and log to MLflow
         best_run_id = self._train_best_model(X_train, X_test, y_train, y_test)
@@ -298,10 +304,10 @@ class TrainMlflowOptuna:
             # Get the run ID for reference
             run_id = run.info.run_id
             
-            print(f"\nBest Model MLflow Run ID: {run_id}")
-            print(f"Tracking URI: {self.setup.get_tracking_uri()}")
-            print(f"Train Accuracy: {train_metrics['train_accuracy']:.4f}")
-            print(f"Test Accuracy: {test_metrics['test_accuracy']:.4f}")
+            logger.info(f"Best Model MLflow Run ID: {run_id}")
+            logger.info(f"Tracking URI: {self.setup.get_tracking_uri()}")
+            logger.info(f"Train Accuracy: {train_metrics['train_accuracy']:.4f}")
+            logger.info(f"Test Accuracy: {test_metrics['test_accuracy']:.4f}")
             
             return run_id
     
