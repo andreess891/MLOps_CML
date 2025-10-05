@@ -15,11 +15,11 @@ from sklearn.metrics import root_mean_squared_error
 import mlflow
 from prefect import task, flow, get_run_logger
 from prefect.artifacts import create_table_artifact, create_markdown_artifact
+from sklearn.ensemble import RandomForestClassifier
 
 from etl import GetData
 from feature_engineer import FeatureEngineer
-
-project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+from train_with_mlflow_optuna import TrainMlflowOptuna
 
 # Setup logging
 logging.basicConfig(level=logging.INFO)
@@ -28,7 +28,7 @@ logger = logging.getLogger(__name__)
 # MLflow configuration with fallback
 def setup_mlflow():
     """Setup MLflow with proper error handling and fallback options."""
-    mlflow_uri = os.getenv("MLFLOW_TRACKING_URI", "sqlite:///src/app/train/wine.db")
+    mlflow_uri = os.getenv("MLFLOW_TRACKING_URI", "sqlite:///wine_quality.db")
     
     try:
         mlflow.set_tracking_uri(mlflow_uri)
@@ -39,7 +39,7 @@ def setup_mlflow():
     except Exception as e:
         logger.warning(f"Failed to connect to {mlflow_uri}: {e}")
         logger.info("Falling back to local SQLite database")
-        mlflow.set_tracking_uri("sqlite:///src/app/train/wine.db")
+        mlflow.set_tracking_uri("sqlite:///wine_quality.db")
     
     try:
         mlflow.set_experiment("wine-quality-experiment-prefect")
@@ -48,7 +48,7 @@ def setup_mlflow():
         raise
 
 # Initialize MLflow
-setup_mlflow()
+#setup_mlflow()
 
 
 @task(name="load_data", description="Carga del set de datos de la calidad de vinos desde Kaggele", retries=3, retry_delay_seconds=10)
@@ -97,7 +97,7 @@ def read_dataframe() -> pd.DataFrame:
 
 
 @task(name="create_features", description="Create feature matrix using DictVectorizer")
-def create_features(df: pd.DataFrame, dv: Optional[DictVectorizer] = None) -> Tuple[any, DictVectorizer]:
+def create_features(df: pd.DataFrame) -> Tuple[any, list, list, str]:
     """
     Create feature matrix from DataFrame.
 
@@ -118,49 +118,20 @@ def create_features(df: pd.DataFrame, dv: Optional[DictVectorizer] = None) -> Tu
     numeric_features = ['volatile_acidity', 'residual_sugar', 'density', 'alcohol']
     categorical_features = []
     target_column = 'quality'
-    
-    # Ensure all required columns exist
-    missing_cols = [col for col in categorical_features + numeric_features if col not in df.columns]
-    if missing_cols:
-        raise ValueError(f"Missing required columns: {missing_cols}")
 
-    dicts = df[categorical_features + numeric_features].to_dict(orient='records')
-    logger.info(f"Created {len(dicts)} feature dictionaries")
-
-    if dv is None:
-        dv = DictVectorizer(sparse=True)
-        X = dv.fit_transform(dicts)
-
-        # Create artifact with feature info
-        feature_info = [
-            ["Total Features", X.shape[1]],
-            ["Categorical Features", len(categorical_features)],
-            ["Numerical Features", len(numeric_features)],
-            ["Samples", X.shape[0]]
-        ]
-
-        create_table_artifact(
-            key="feature-info",
-            table=feature_info,
-            description="Feature matrix information"
-        )
-    else:
-        X = dv.transform(dicts)
-
-    return X, dv
+    return df, numeric_features, categorical_features, target_column
 
 
-@task(name="train_model", description="Train XGBoost model with MLflow tracking")
-def train_model(X_train, y_train, X_val, y_val, dv: DictVectorizer) -> str:
+@task(name="train_model", description="Train RandomForestClassifier model with MLflow tracking")
+def train_model(df, numeric_features, categorical_features, target_column) -> str:
     """
-    Train XGBoost model and log to MLflow.
+    Train RandomForestClassifier model and log to MLflow.
 
     Args:
-        X_train: Training features
-        y_train: Training targets
-        X_val: Validation features
-        y_val: Validation targets
-        dv: Fitted DictVectorizer
+        df: Input DataFrame
+        numeric_features: List of numeric feature names
+        categorical_features: List of categorical feature names
+        target_column: Name of the target column
 
     Returns:
         MLflow run ID
@@ -171,142 +142,114 @@ def train_model(X_train, y_train, X_val, y_val, dv: DictVectorizer) -> str:
     models_folder = Path('models')
     models_folder.mkdir(exist_ok=True)
     
-    logger.info(f"Training with {X_train.shape[0]} samples, {X_train.shape[1]} features")
+    logger.info(f"Training with {df.shape[0]} samples, {df.shape[1] - 1} features")
 
-    with mlflow.start_run() as run:
-        train = xgb.DMatrix(X_train, label=y_train)
-        valid = xgb.DMatrix(X_val, label=y_val)
+    param_distributions = {
+        'n_estimators': ('int', 50, 200),
+        'max_depth': ('int', 5, 30),
+        'min_samples_split': ('int', 2, 10),
+        'min_samples_leaf': ('int', 1, 5),
+        'max_features': ('categorical', ['sqrt', 'log2', None])
+    }
 
-        best_params = {
-            'learning_rate': 0.09585355369315604,
-            'max_depth': 30,
-            'min_child_weight': 1.060597050922164,
-            'objective': 'reg:squarederror',  # Updated from deprecated 'reg:linear'
-            'reg_alpha': 0.018060244040060163,
-            'reg_lambda': 0.011658731377413597,
-            'seed': 42
-        }
+    trainer = TrainMlflowOptuna(
+        df=df,
+        numeric_features=numeric_features,
+        categorical_features=categorical_features,
+        target_column=target_column,
+        model_class=RandomForestClassifier,
+        test_size=0.3,
+        n_trials=30,
+        optimization_metric='f1',  # Optimize for F1 score
+        param_distributions=param_distributions,
+        model_params={'random_state': 42, 'n_jobs': -1},
+        mlflow_setup = mlflow
+    )
 
-        mlflow.log_params(best_params)
+    best_pipeline, run_id, study = trainer.train()
 
-        booster = xgb.train(
-            params=best_params,
-            dtrain=train,
-            num_boost_round=30,
-            evals=[(valid, 'validation')],
-            early_stopping_rounds=50
-        )
 
-        y_pred = booster.predict(valid)
-        rmse = root_mean_squared_error(y_val, y_pred)
-        mlflow.log_metric("rmse", rmse)
+    logger.info(f"\nOptimization complete!")
+    logger.info(f"Best f1: {study.best_value:.4f}")
+    logger.info(f"Best parameters: {study.best_params}")
 
-        # Save preprocessor
-        preprocessor_path = "models/preprocessor.b"
-        with open(preprocessor_path, "wb") as f_out:
-            pickle.dump(dv, f_out)
-        
-        try:
-            mlflow.log_artifact(preprocessor_path, artifact_path="preprocessor")
-            # Log model
-            mlflow.xgboost.log_model(booster, artifact_path="models_mlflow")
-            logger.info("Successfully logged model and preprocessor to MLflow")
-        except Exception as e:
-            logger.warning(f"Failed to log to MLflow: {e}")
-            logger.info("Model artifacts saved locally in models/ directory")
+    # Create Prefect artifact with model performance
+    performance_data = [
+        ["f1", f"{study.best_value:.4f}"],
+        ["Max Depth", study.best_params['max_depth']],
+        ["min_samples_split", study.best_params['min_samples_split']],
+        ["min_samples_leaf", study.best_params['min_samples_leaf']],
+        ["max_features", study.best_params['max_features']],
+        ["MLflow Run ID", run_id]
+    ]
 
-        # Create Prefect artifact with model performance
-        performance_data = [
-            ["RMSE", f"{rmse:.4f}"],
-            ["Learning Rate", best_params['learning_rate']],
-            ["Max Depth", best_params['max_depth']],
-            ["Num Boost Rounds", 30],
-            ["MLflow Run ID", run.info.run_id]
-        ]
-
-        create_table_artifact(
+    create_table_artifact(
             key="model-performance",
             table=performance_data,
-            description=f"Model performance metrics - RMSE: {rmse:.4f}"
+            description=f"Model performance metrics - f1: {study.best_value:.4f}"
         )
+    
+    # Create markdown artifact with training summary
+    markdown_content = f"""
+    # Model Training Summary
 
-        # Create markdown artifact with training summary
-        markdown_content = f"""
-        # Model Training Summary
+    ## Performance
+    - **f1**: {study.best_value:.4f}
+    - **MLflow Run ID**: {run_id}
 
-        ## Performance
-        - **RMSE**: {rmse:.4f}
-        - **MLflow Run ID**: {run.info.run_id}
+    ## Parameters
+    - Max Depth: {study.best_params['max_depth']}
+    - min_samples_split: {study.best_params['min_samples_split']}
+    - min_samples_leaf: {study.best_params['min_samples_leaf']}
+    - max_features: {study.best_params['max_features']}
 
-        ## Parameters
-        - Learning Rate: {best_params['learning_rate']}
-        - Max Depth: {best_params['max_depth']}
-        - Min Child Weight: {best_params['min_child_weight']}
-        - Regularization Alpha: {best_params['reg_alpha']}
-        - Regularization Lambda: {best_params['reg_lambda']}
+    ## Training Details
+    - Boost Rounds: 30
+    - Early Stopping: 50 rounds
+    - Best pipeline: {best_pipeline}
+    """
 
-        ## Training Details
-        - Boost Rounds: 30
-        - Early Stopping: 50 rounds
-        - Objective: {best_params['objective']}
-        """
-
-        create_markdown_artifact(
+    create_markdown_artifact(
             key="training-summary",
             markdown=markdown_content,
             description="Detailed training summary"
         )
 
-        return run.info.run_id
+    logger.info(f"Training complete!")
+
+    return run_id
 
 
-@flow(name="NYC Taxi Duration Prediction Pipeline", description="End-to-end ML pipeline for taxi duration prediction")
-def duration_prediction_flow(year: int, month: int) -> str:
+@flow(name="Wine Quality Prediction Pipeline", description="End-to-end ML pipeline for wine quality prediction")
+def wine_quality_prediction_flow() -> str:
     """
-    Main flow for NYC taxi duration prediction.
+    Main flow for wine quality prediction.
 
     Args:
-        year: Year of training data
-        month: Month of training data
+        None
 
     Returns:
         MLflow run ID
     """
     # Load training data
-    df_train = read_dataframe(year=year, month=month)
-
-    # Calculate validation data period
-    next_year = year if month < 12 else year + 1
-    next_month = month + 1 if month < 12 else 1
-
-    # Load validation data
-    df_val = read_dataframe(year=next_year, month=next_month)
+    df = read_dataframe()
 
     # Create features
-    X_train, dv = create_features(df_train)
-    X_val, _ = create_features(df_val, dv)
-
-    # Prepare targets
-    target = 'duration'
-    y_train = df_train[target].values
-    y_val = df_val[target].values
+    df_train, numeric_features, categorical_features, target_column = create_features(df)
 
     # Train model
-    run_id = train_model(X_train, y_train, X_val, y_val, dv)
+    run_id = train_model(df_train, numeric_features, categorical_features, target_column)
 
     # Create final pipeline artifact
     pipeline_summary = f"""
     # Pipeline Execution Summary
 
     ## Data
-    - **Training Period**: {year}-{month:02d}
-    - **Validation Period**: {next_year}-{next_month:02d}
-    - **Training Samples**: {len(y_train):,}
-    - **Validation Samples**: {len(y_val):,}
+    - **Training Period**: https://www.kaggle.com/datasets/rajyellow46/wine-quality
 
     ## Results
     - **MLflow Run ID**: {run_id}
-    - **MLflow Experiment**: nyc-taxi-experiment-prefect
+    - **MLflow Experiment**: wine-quality-experiment-prefect
 
     ## Next Steps
     1. Review model performance in MLflow UI: http://localhost:5000
@@ -332,20 +275,20 @@ if __name__ == "__main__":
     #print(f"argumentos: {args}")
     # Override MLflow URI if provided
     
-    os.environ["MLFLOW_TRACKING_URI"] = "sqlite:///wine.db"
+    #os.environ["MLFLOW_TRACKING_URI"] = "sqlite:///wine.db"
     setup_mlflow()
 
-    #try:
+    try:
         # Run the flow
-        #run_id = duration_prediction_flow(year=args.year, month=args.month)
-        #print("\n✅ Pipeline completed successfully!")
-        #print(f"📊 MLflow run_id: {run_id}")
-        #print(f"🔗 View results at: {mlflow.get_tracking_uri()}")
+        run_id = wine_quality_prediction_flow()
+        print("\n✅ Pipeline completed successfully!")
+        print(f"📊 MLflow run_id: {run_id}")
+        print(f"🔗 View results at: {mlflow.get_tracking_uri()}")
 
         # Save run ID for reference
-        #with open("prefect_run_id.txt", "w") as f:
-        #    f.write(run_id)
+        with open("prefect_run_id.txt", "w") as f:
+            f.write(run_id)
             
-    #except Exception as e:
-    #    logger.error(f"Pipeline failed: {e}")
-    #    raise
+    except Exception as e:
+        logger.error(f"Pipeline failed: {e}")
+        raise
