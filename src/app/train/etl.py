@@ -1,8 +1,6 @@
 #!/usr/bin/env python3
 """
-Script para generar datos sintéticos de usuarios para targeting de promociones.
-Este script simula un dataset realista para el problema de identificar qué usuarios
-deben recibir promociones basado en su comportamiento transaccional y perfil.
+Script para extraer datos de Vinos desde Kaggle.
 """
 
 import os
